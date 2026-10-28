@@ -41,6 +41,33 @@ the **Dashboard** to-do list.
 Your data is saved in `data/state.json`, which git ignores. Use
 **Settings → Download backup** to keep a copy.
 
+## If something goes wrong
+
+**"'npm' is not recognized as an internal or external command"** (Windows) or
+**"command not found: npm"** (Mac) means the terminal can't find Node.js. Try these in order:
+
+1. **Close the terminal and open a new one.** A terminal that was already open
+   when you installed Node.js doesn't know about it yet. This fixes it most of the time.
+2. **Check that Node.js is installed.** In the new terminal, type `node --version`
+   and press Enter. If you see a version number like `v22.11.0`, Node.js is
+   installed; go back to the folder and run `npm start` again.
+3. **Install Node.js.** If you don't see a version number, download the **LTS**
+   version from https://nodejs.org and run the installer. Keep the default options;
+   on Windows, make sure **Add to PATH** stays selected. Then open a new terminal
+   and try again.
+4. **Restart your computer** if it still doesn't work after installing.
+
+**"Missing script: start"** or **"Could not read package.json"** means the terminal
+isn't in the app's folder. Open it again in the `Date-Removal-main` folder (the
+one that holds `package.json` and `server.js`), as described above. If you
+unzipped it into a folder of the same name, it may be one folder deeper.
+
+**"EADDRINUSE"** means the app is already running in another terminal window.
+Use that one, or close it first.
+
+**The page won't load** in your browser: check that the terminal window is still
+open and shows `Data Removal running at http://localhost:7100`.
+
 ## Tips
 
 - Use a separate email address just for opt-outs. Most sites email you a
