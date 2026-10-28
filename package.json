@@ -1,7 +1,7 @@
 {
-  "name": "my-teams-addon",
+  "name": "data-removal",
   "version": "1.0.0",
-  "description": "Stremio addon: follow your teams with schedules and live scores",
+  "description": "Self-hosted helper for removing your personal information from data brokers and people-search sites",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

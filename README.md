@@ -1,54 +1,69 @@
-# My Teams — Stremio addon
+# Data Removal — a do-it-yourself Optery
 
-Adds a **My Teams** row to Stremio with one tile per team. Click a team to see:
+A small app that helps you find and remove your personal information from
+people-search sites and data brokers (Spokeo, Whitepages, BeenVerified, Intelius,
+TruePeopleSearch and about 25 more).
 
-- 🔴 live games with the current score and clock (refreshed every 30 seconds)
-- the last 5 results (W/L/D with score) and the next 5 games, in your time zone
-- for each game: **Search Stremio** buttons, which search all your installed addons
-  (including Sport Streams), plus the ESPN game page and the official broadcasters
+It runs on your own computer, and your information never leaves it. It doesn't
+contact the broker sites itself. You open each site in your browser, and the app:
 
-Data comes from ESPN's free public API. No account or API key is needed.
+- builds **search links** that look you up on each site, under every name and city you've used
+- shows the **opt-out page and steps** for each site, including which sites one
+  opt-out also covers (one PeopleConnect request covers Intelius, TruthFinder,
+  Instant Checkmate and others)
+- **drafts removal-request emails** that cite the CCPA and other privacy laws, for
+  any site, including ones you add yourself
+- **tracks status** (not listed → listed → removal requested → removed), with
+  listing URLs, notes and a history for each site
+- shows a **to-do list**: what to request, what to follow up on (default 30 days
+  after a request), and what to re-check (default 90 days after a site is clear,
+  because brokers often re-add people)
+- keeps a list of **your own sites**, for anything else you find through Google, Bing or DuckDuckGo
 
-## Change your teams
+## Run it
 
-Edit `teams.js`. It has instructions for finding a team's league and id.
+Requires Node.js 18 or newer (download the LTS version from https://nodejs.org). There is nothing else to install.
 
-## Run on your computer
+Download this repository (green **Code** button → **Download ZIP**) and unzip it, then open a terminal in that folder:
 
-Requires Node.js 18 or newer.
+- **Windows:** open the folder in File Explorer, click the address bar, type `cmd`, and press Enter.
+- **Mac:** open Terminal, type `cd ` (with a space), drag the folder into the window, and press Return.
+
+Then run:
 
 ```bash
 npm start
 ```
 
-Then in Stremio, open **Addons**, paste `http://127.0.0.1:7000/manifest.json` into the search box, and install it.
+Leave the terminal open while you use the app. Open http://localhost:7100, add your info under **My info**, then work through
+the **Dashboard** to-do list.
 
-## Deploy for free on Render (works on TV and phone)
+Your data is saved in `data/state.json`, which git ignores. Use
+**Settings → Download backup** to keep a copy.
 
-1. Create a free account at https://github.com and make a new repository, e.g. `my-teams-addon`.
-   Choose **uploading an existing file**, drag in `server.js`, `teams.js`, `package.json`, `README.md`, and commit.
-2. Create a free account at https://render.com, click **New → Web Service**, and connect that repository.
-3. Use these settings:
-   - Runtime: **Node**
-   - Build command: `npm install`
-   - Start command: `npm start`
-   - Instance type: **Free**
-   - Optional environment variable `TIMEZONE` (default `America/Chicago`), e.g. `America/New_York`
-4. When it's live, open the URL Render gives you (e.g. `https://my-teams-addon.onrender.com`)
-   and click **Install in Stremio**, or paste `https://<your-app>.onrender.com/manifest.json`
-   into Stremio's addon search box.
+## Tips
 
-Because the addon is installed under your Stremio account, it shows up on every device you sign in to.
+- Use a separate email address just for opt-outs. Most sites email you a
+  confirmation link, and you don't want to give them your main address.
+- Start with the "Major site" entries. They feed many of the smaller ones.
+- Add old addresses and maiden or other names. Brokers file records under all of them.
+- California residents can also use the state's free DROP platform (Delete
+  Request and Opt-out Platform) to send one deletion request to every registered data broker.
 
-**Note:** Render's free tier sleeps after about 15 minutes without requests, so the first
-open after a while can take 30–60 seconds to load. Later opens are fast.
+## Keeping the site list current
 
-## Notes
+Broker sites change their opt-out pages often. All links and steps are in
+`brokers.js`. If one breaks, fix it there and restart. Don't rename an `id` once
+you've used it, because your saved status is stored under it.
 
-- Live scores update when you open or reopen a team page. Stremio doesn't auto-refresh an open page.
-- Manchester United shows Premier League games only (not cups or Europe).
+## Settings
 
----
+| Environment variable | Default | Meaning |
+| --- | --- | --- |
+| `PORT` | `7100` | Port to listen on |
+| `HOST` | `127.0.0.1` | Only this computer can reach the app. Setting another host requires `PASSWORD`. |
+| `PASSWORD` | none | Turns on a browser password prompt (any user name). Required if you expose the app beyond this computer. |
+| `DATA_FILE` | `data/state.json` | Where your information is saved |
 
-This repository also contains **[Data Removal](data-removal/README.md)**, a separate,
-self-hosted app for removing your personal information from people-search sites and data brokers.
+This app holds your home addresses, phone numbers and emails. Keep it on your
+own computer rather than deploying it to a public host.

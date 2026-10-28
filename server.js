@@ -1,237 +1,277 @@
-// My Teams — a Stremio addon that lists your teams, their games and live scores
-// (from ESPN's public site API), with buttons that search your other addons.
+// Data Removal — a small, self-hosted take on Optery. It keeps your profile and a
+// checklist of data brokers on your own computer, builds links that look you up on
+// each site, tracks what you've requested, reminds you to re-check, and drafts
+// opt-out emails. Nothing is sent anywhere; you open each site yourself.
 const http = require('http');
-const TEAMS = require('./teams');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const BROKERS = require('./brokers');
 
-const PORT = process.env.PORT || 7000;
-const TIMEZONE = process.env.TIMEZONE || 'America/Chicago';
-const ESPN = 'https://site.api.espn.com/apis/site/v2/sports';
-const PREFIX = 'sportsteam:';
-const TYPE = 'channel';
-const PAST_GAMES = 5;
-const NEXT_GAMES = 5;
+const PORT = Number(process.env.PORT) || 7100;
+const HOST = process.env.HOST || '127.0.0.1';
+const PASSWORD = process.env.PASSWORD || '';
+const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data', 'state.json');
+const PAGE = path.join(__dirname, 'public', 'index.html');
+const STATUSES = ['unchecked', 'not_found', 'found', 'submitted', 'removed'];
+const MAX_BODY = 1_000_000;
 
-const manifest = {
-  id: 'community.myteams.scores',
-  version: '1.0.0',
-  name: 'My Teams',
-  description: 'Follow your teams: schedules, live scores, where to watch, and one-click search across your addons.',
-  logo: 'https://a.espncdn.com/redesign/assets/img/icons/ESPN-icon-scores.png',
-  resources: ['catalog', 'meta', 'stream'],
-  types: [TYPE],
-  idPrefixes: [PREFIX],
-  catalogs: [{ type: TYPE, id: 'myteams', name: 'My Teams' }],
-};
+// --- Storage ---------------------------------------------------------------
 
-// --- ESPN data -------------------------------------------------------------
+const emptyState = () => ({
+  profile: { first: '', middle: '', last: '', aliases: [], birthYear: '', emails: [], phones: [], addresses: [] },
+  settings: { recheckDays: 90, followUpDays: 30 },
+  records: {}, // broker id -> { status, notes, listingUrls, history: [{ at, status, note }] }
+  custom: [], // sites you add yourself: { id, name, url, optOut, email }
+});
 
-const cache = new Map();
-
-async function getJson(url, ttlMs) {
-  const hit = cache.get(url);
-  if (hit && Date.now() - hit.at < ttlMs) return hit.data;
+function load() {
   try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`ESPN returned ${res.status} for ${url}`);
-    const data = await res.json();
-    cache.set(url, { at: Date.now(), data });
-    return data;
+    const saved = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+    const base = emptyState();
+    return { ...base, ...saved, profile: { ...base.profile, ...saved.profile }, settings: { ...base.settings, ...saved.settings } };
   } catch (err) {
-    if (hit) return hit.data; // serve stale data rather than nothing
-    throw err;
+    if (err.code !== 'ENOENT') console.error(`Could not read ${DATA_FILE}: ${err.message}`);
+    return emptyState();
   }
 }
 
-const scoreOf = (s) => (s && typeof s === 'object' ? s.displayValue : s) ?? null;
+let state = load();
 
-function toGame(team, event) {
-  const comp = event.competitions[0];
-  const sides = comp.competitors.map((c) => ({
-    id: c.team.id,
-    abbr: c.team.abbreviation,
-    name: c.team.shortDisplayName,
-    logo: c.team.logo || c.team.logos?.[0]?.href,
-    home: c.homeAway === 'home',
-    score: scoreOf(c.score),
+function save() {
+  fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
+  const tmp = `${DATA_FILE}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, DATA_FILE); // atomic, so a crash never leaves half a file
+}
+
+// --- Brokers as the page sees them ----------------------------------------
+
+const str = (v, max = 500) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+const strList = (v, max = 50) => (Array.isArray(v) ? v.map((s) => str(s)).filter(Boolean).slice(0, max) : []);
+
+// Every name you go by, split into first/last, paired with every city you've lived in.
+function lookups(profile) {
+  const names = [];
+  if (profile.first && profile.last) names.push({ first: profile.first, last: profile.last });
+  for (const alias of profile.aliases) {
+    const parts = alias.split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) names.push({ first: parts[0], last: parts[parts.length - 1] });
+  }
+  const places = profile.addresses.filter((a) => a.city || a.state).map((a) => ({ city: a.city || '', state: (a.state || '').toUpperCase() }));
+  if (!places.length) places.push({ city: '', state: '' });
+  const seen = new Set();
+  const out = [];
+  for (const n of names) {
+    for (const p of places) {
+      const label = [`${n.first} ${n.last}`, [p.city, p.state].filter(Boolean).join(', ')].filter(Boolean).join(' — ');
+      if (!seen.has(label.toLowerCase())) {
+        seen.add(label.toLowerCase());
+        out.push({ ...n, ...p, label });
+      }
+    }
+  }
+  return out.slice(0, 8);
+}
+
+const uniqueBy = (list, key) => list.filter((x, i) => list.findIndex((y) => key(y) === key(x)) === i);
+
+// Some sites only search by name; don't label those links with a city.
+function searchLink(broker, q) {
+  const url = broker.search(q);
+  const nameOnly = url === broker.search({ ...q, city: '', state: '' });
+  return { label: nameOnly ? `${q.first} ${q.last}` : q.label, url };
+}
+
+function brokerView() {
+  const qs = lookups(state.profile);
+  const builtIn = BROKERS.map((b) => ({
+    id: b.id,
+    name: b.name,
+    url: b.url,
+    optOut: b.optOut,
+    method: b.method,
+    email: b.email || '',
+    priority: b.priority,
+    covers: b.covers || [],
+    steps: b.steps,
+    searchLinks: b.search ? uniqueBy(qs.map((q) => searchLink(b, q)), (l) => l.url) : [],
+    custom: false,
   }));
-  const gamePath = team.sport === 'soccer' ? 'soccer/match' : `${team.league}/game`;
+  const custom = state.custom.map((c) => ({
+    ...c, method: c.email ? 'email' : 'form', priority: 2, covers: [], steps: 'A site you added yourself.', searchLinks: [], custom: true,
+  }));
+  return [...builtIn, ...custom];
+}
+
+const view = () => ({ profile: state.profile, settings: state.settings, records: state.records, lookups: lookups(state.profile), brokers: brokerView() });
+
+// --- Validation of what the page sends -------------------------------------
+
+function cleanProfile(p = {}) {
+  const addresses = Array.isArray(p.addresses) ? p.addresses.slice(0, 20).map((a) => ({
+    street: str(a?.street), city: str(a?.city, 100), state: str(a?.state, 2).toUpperCase(), zip: str(a?.zip, 10),
+  })).filter((a) => a.street || a.city || a.state || a.zip) : [];
   return {
-    id: event.id,
-    date: new Date(event.date),
-    state: comp.status.type.state, // pre | in | post
-    detail: comp.status.type.shortDetail,
-    us: sides.find((s) => s.id === team.id),
-    them: sides.find((s) => s.id !== team.id),
-    venue: comp.venue?.fullName,
-    // Schedules use { media: { shortName } }, scoreboards use { names: [...] }.
-    broadcasts: [...new Set((comp.broadcasts || []).flatMap((b) => b.names || [b.media?.shortName]).filter(Boolean))],
-    link: `https://www.espn.com/${gamePath}/_/gameId/${event.id}`,
+    first: str(p.first, 100), middle: str(p.middle, 100), last: str(p.last, 100),
+    aliases: strList(p.aliases), birthYear: str(p.birthYear, 4),
+    emails: strList(p.emails), phones: strList(p.phones), addresses,
   };
 }
 
-// The team schedule has no live scores, so in-progress games are overlaid
-// with the league's scoreboard, which is refreshed every 30 seconds.
-async function getTeam(team) {
-  const base = `${ESPN}/${team.sport}/${team.league}`;
-  const scheduleUrl = `${base}/teams/${team.id}/schedule`;
-  // Soccer schedules only return results; upcoming fixtures need ?fixture=true.
-  const urls = team.sport === 'soccer' ? [scheduleUrl, `${scheduleUrl}?fixture=true`] : [scheduleUrl];
-  const [scoreboard, ...schedules] = await Promise.all([
-    getJson(`${base}/scoreboard`, 30e3).catch(() => ({ events: [] })),
-    ...urls.map((u) => getJson(u, 10 * 60e3)),
-  ]);
-  const live = new Map((scoreboard.events || []).map((e) => [e.id, e]));
-  const events = new Map();
-  for (const s of schedules) for (const e of s.events || []) events.set(e.id, live.get(e.id) || e);
-  const games = [...events.values()].map((e) => toGame(team, e)).sort((a, b) => a.date - b.date);
-  return { info: schedules[0].team, games };
+const knownBroker = (id) => BROKERS.some((b) => b.id === id) || state.custom.some((c) => c.id === id);
+
+function updateRecord(id, body) {
+  const rec = state.records[id] || { status: 'unchecked', notes: '', listingUrls: [], history: [] };
+  if (body.status !== undefined) {
+    if (!STATUSES.includes(body.status)) throw httpError(400, 'Unknown status');
+    rec.history.push({ at: new Date().toISOString(), status: body.status, note: str(body.note) });
+    rec.status = body.status;
+  }
+  if (body.notes !== undefined) rec.notes = str(body.notes, 5000);
+  if (body.listingUrls !== undefined) rec.listingUrls = strList(body.listingUrls);
+  state.records[id] = rec;
 }
 
-// --- Formatting --------------------------------------------------------------
+function addCustom(body) {
+  const name = str(body.name, 100);
+  if (!name) throw httpError(400, 'Name is required');
+  const site = { id: `custom-${crypto.randomUUID().slice(0, 8)}`, name, url: str(body.url), optOut: str(body.optOut), email: str(body.email, 200) };
+  state.custom.push(site);
+  return site;
+}
 
-const when = (date) =>
-  date.toLocaleString('en-US', {
-    timeZone: TIMEZONE, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+function applySettings(body) {
+  const days = (v, d) => (Number.isInteger(v) && v > 0 && v <= 3650 ? v : d);
+  state.settings = { recheckDays: days(body.recheckDays, 90), followUpDays: days(body.followUpDays, 30) };
+}
+
+// --- HTTP ------------------------------------------------------------------
+
+function httpError(status, message) {
+  return Object.assign(new Error(message), { status });
+}
+
+function send(res, status, body, headers = {}) {
+  const isJson = typeof body !== 'string';
+  res.writeHead(status, {
+    'Content-Type': isJson ? 'application/json; charset=utf-8' : 'text/html; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer',
+    'X-Frame-Options': 'DENY',
+    ...headers,
   });
-
-const opponent = (g) => `${g.us.home ? 'vs' : '@'} ${g.them.name}`;
-
-function gameTitle(g) {
-  if (g.state === 'in') return `🔴 LIVE ${g.detail} · ${g.us.name} ${g.us.score}–${g.them.score} ${g.them.name}`;
-  if (g.state === 'post') {
-    const [a, b] = [Number(g.us.score), Number(g.them.score)];
-    const result = a > b ? 'W' : a < b ? 'L' : 'D';
-    return `${result} ${g.us.score}–${g.them.score} ${opponent(g)} (${g.detail})`;
-  }
-  return `🗓 ${opponent(g)} · ${when(g.date)}`;
+  res.end(isJson ? JSON.stringify(body) : body);
 }
 
-function gameOverview(g) {
-  return [
-    g.state === 'pre' ? `Starts ${when(g.date)}` : g.detail,
-    g.venue && `Venue: ${g.venue}`,
-    g.broadcasts.length && `Watch on: ${g.broadcasts.join(', ')}`,
-  ].filter(Boolean).join('\n');
-}
-
-// Live games, plus the last few results and next few fixtures.
-function visibleGames(games) {
-  const past = games.filter((g) => g.state === 'post').slice(-PAST_GAMES);
-  const live = games.filter((g) => g.state === 'in');
-  const next = games.filter((g) => g.state === 'pre').slice(0, NEXT_GAMES);
-  return [...past, ...live, ...next];
-}
-
-function headline(games) {
-  const live = games.find((g) => g.state === 'in');
-  if (live) return gameTitle(live);
-  const next = games.find((g) => g.state === 'pre');
-  return next ? `Next: ${opponent(next)} · ${when(next.date)}` : 'No upcoming games';
-}
-
-function teamMeta(team, { info, games }, withVideos) {
-  const meta = {
-    id: PREFIX + team.slug,
-    type: TYPE,
-    name: info.displayName,
-    poster: info.logo,
-    posterShape: 'square',
-    logo: info.logo,
-    description: [headline(games), [info.recordSummary, info.standingSummary].filter(Boolean).join(' · ')]
-      .filter(Boolean).join('\n'),
-  };
-  if (withVideos) {
-    meta.videos = visibleGames(games).map((g) => ({
-      id: `${PREFIX}${team.slug}:${g.id}`,
-      title: gameTitle(g),
-      released: g.date.toISOString(),
-      thumbnail: g.them.logo,
-      overview: gameOverview(g),
-    }));
-  }
-  return meta;
-}
-
-function gameStreams(team, g) {
-  const search = (text) => ({
-    name: 'Search',
-    title: `🔍 Search Stremio for "${text}"`,
-    externalUrl: `stremio:///search?search=${encodeURIComponent(text)}`,
+function readJson(req) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > MAX_BODY) reject(httpError(413, 'Request too large'));
+      else chunks.push(c);
+    });
+    req.on('end', () => {
+      try { resolve(chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}); } catch { reject(httpError(400, 'Invalid JSON')); }
+    });
+    req.on('error', reject);
   });
-  return [
-    search(team.search),
-    search(`${g.us.name} ${g.them.name}`),
-    {
-      name: 'ESPN',
-      title: [
-        g.state === 'in' ? '📊 Live score & stats on ESPN' : '📊 Game page on ESPN',
-        g.broadcasts.length && `📺 Official broadcast: ${g.broadcasts.join(', ')}`,
-      ].filter(Boolean).join('\n'),
-      externalUrl: g.link,
-    },
-  ];
 }
 
-// --- Stremio routes ------------------------------------------------------------
+function authorized(req) {
+  if (!PASSWORD) return true;
+  const [scheme, value] = (req.headers.authorization || '').split(' ');
+  if (scheme !== 'Basic' || !value) return false;
+  const given = Buffer.from(Buffer.from(value, 'base64').toString('utf8').split(':').slice(1).join(':'));
+  const want = Buffer.from(PASSWORD);
+  return given.length === want.length && crypto.timingSafeEqual(given, want);
+}
 
-const findTeam = (slug) => TEAMS.find((t) => t.slug === slug);
-const isLive = (games) => games.some((g) => g.state === 'in');
+// Without a password the app only answers to localhost, so another website you
+// visit can't reach it through your browser (DNS rebinding).
+function hostAllowed(req) {
+  if (PASSWORD) return true;
+  const host = (req.headers.host || '').replace(/:\d+$/, '');
+  return ['localhost', '127.0.0.1', '[::1]'].includes(host);
+}
 
-async function route(resource, type, id) {
-  if (type !== TYPE) return null;
-  if (resource === 'catalog' && id === 'myteams') {
-    const data = await Promise.all(TEAMS.map(getTeam));
-    return {
-      metas: TEAMS.map((t, i) => teamMeta(t, data[i], false)),
-      cacheMaxAge: data.some((d) => isLive(d.games)) ? 30 : 300,
-    };
+async function route(req, res) {
+  const url = new URL(req.url, 'http://localhost');
+  const parts = url.pathname.split('/').filter(Boolean);
+  const method = req.method;
+
+  if (method === 'GET' && url.pathname === '/') return send(res, 200, fs.readFileSync(PAGE, 'utf8'));
+  if (parts[0] !== 'api') throw httpError(404, 'Not found');
+
+  // Writes must come from our own page: a custom header forces a CORS preflight,
+  // which other origins fail.
+  if (method !== 'GET' && req.headers['x-requested-with'] !== 'data-removal') throw httpError(403, 'Forbidden');
+
+  if (method === 'GET' && parts[1] === 'state') {
+    return send(res, 200, view());
   }
-  if (!id.startsWith(PREFIX)) return null;
-  const [slug, gameId] = id.slice(PREFIX.length).split(':');
-  const team = findTeam(slug);
-  if (!team) return null;
-  const data = await getTeam(team);
-  const maxAge = isLive(data.games) ? 30 : 300;
-  if (resource === 'meta') return { meta: teamMeta(team, data, true), cacheMaxAge: maxAge };
-  if (resource === 'stream') {
-    const game = data.games.find((g) => g.id === gameId);
-    return { streams: game ? gameStreams(team, game) : [], cacheMaxAge: maxAge };
+  if (method === 'GET' && parts[1] === 'export') {
+    return send(res, 200, state, { 'Content-Disposition': 'attachment; filename="data-removal-backup.json"' });
   }
-  return null;
+
+  const body = await readJson(req);
+  if (method === 'PUT' && parts[1] === 'profile') {
+    state.profile = cleanProfile(body);
+  } else if (method === 'PUT' && parts[1] === 'settings') {
+    applySettings(body);
+  } else if (method === 'POST' && parts[1] === 'brokers' && parts[2]) {
+    if (!knownBroker(parts[2])) throw httpError(404, 'Unknown site');
+    updateRecord(parts[2], body);
+  } else if (method === 'POST' && parts[1] === 'custom') {
+    addCustom(body);
+  } else if (method === 'DELETE' && parts[1] === 'custom' && parts[2]) {
+    state.custom = state.custom.filter((c) => c.id !== parts[2]);
+    delete state.records[parts[2]];
+  } else if (method === 'POST' && parts[1] === 'import') {
+    const base = emptyState();
+    const custom = (Array.isArray(body.custom) ? body.custom : [])
+      .filter((c) => /^custom-[a-z0-9]{1,16}$/.test(c?.id) && str(c.name))
+      .map((c) => ({ id: c.id, name: str(c.name, 100), url: str(c.url), optOut: str(c.optOut), email: str(c.email, 200) }));
+    state = { ...base, profile: cleanProfile(body.profile), custom };
+    for (const [id, rec] of Object.entries(body.records || {})) {
+      if (!knownBroker(id) || !STATUSES.includes(rec?.status)) continue;
+      state.records[id] = {
+        status: rec.status,
+        notes: str(rec.notes, 5000),
+        listingUrls: strList(rec.listingUrls),
+        history: (Array.isArray(rec.history) ? rec.history : [])
+          .filter((h) => STATUSES.includes(h?.status) && !Number.isNaN(Date.parse(h.at)))
+          .map((h) => ({ at: new Date(h.at).toISOString(), status: h.status, note: str(h.note) })),
+      };
+    }
+    applySettings(body.settings || {});
+  } else {
+    throw httpError(404, 'Not found');
+  }
+  save();
+  return send(res, 200, view());
 }
 
-function landingPage(req) {
-  const host = req.headers['x-forwarded-host'] || req.headers.host;
-  const proto = req.headers['x-forwarded-proto'] || 'http';
-  const url = `${proto}://${host}/manifest.json`;
-  const install = `stremio://${host}/manifest.json`;
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>My Teams addon</title><style>body{font-family:system-ui,sans-serif;max-width:560px;margin:48px auto;padding:0 16px;background:#14141f;color:#eee}
-a.btn{display:inline-block;background:#7b5bf5;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:600}
-code{background:#26263a;padding:4px 6px;border-radius:4px;word-break:break-all}</style></head><body>
-<h1>My Teams</h1><p>${TEAMS.length} teams: ${TEAMS.map((t) => t.search).join(', ')}</p>
-<p><a class="btn" href="${install}">Install in Stremio</a></p>
-<p>Or paste this into Stremio's addon search box:<br><code>${url}</code></p></body></html>`;
-}
-
-http.createServer(async (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', '*');
-  const path = decodeURIComponent(new URL(req.url, 'http://x').pathname);
-  const send = (status, body, type = 'application/json', maxAge = 0) => {
-    res.writeHead(status, { 'Content-Type': `${type}; charset=utf-8`, 'Cache-Control': `max-age=${maxAge}` });
-    res.end(typeof body === 'string' ? body : JSON.stringify(body));
-  };
+const server = http.createServer(async (req, res) => {
   try {
-    if (path === '/' || path === '/configure') return send(200, landingPage(req), 'text/html');
-    if (path === '/manifest.json') return send(200, manifest, 'application/json', 3600);
-    // Stremio paths look like /meta/channel/sportsteam:pelicans.json (extra args after the id are ignored).
-    const m = path.match(/^\/(catalog|meta|stream)\/([^/]+)\/([^/]+?)(?:\/.*)?\.json$/);
-    const result = m && (await route(m[1], m[2], m[3]));
-    if (!result) return send(404, { error: 'not found' });
-    send(200, result, 'application/json', result.cacheMaxAge);
+    if (!hostAllowed(req)) throw httpError(403, 'Forbidden host');
+    if (!authorized(req)) return send(res, 401, { error: 'Password required' }, { 'WWW-Authenticate': 'Basic realm="Data Removal"' });
+    await route(req, res);
   } catch (err) {
-    console.error(err);
-    send(500, { error: 'failed to load data from ESPN' });
+    if (!err.status) console.error(err);
+    send(res, err.status || 500, { error: err.status ? err.message : 'Server error' });
   }
-}).listen(PORT, () => console.log(`My Teams addon: http://127.0.0.1:${PORT}/manifest.json`));
+});
+
+if (require.main === module) {
+  if (HOST !== '127.0.0.1' && HOST !== 'localhost' && !PASSWORD) {
+    console.error('Refusing to listen beyond this computer without a PASSWORD. Set PASSWORD or leave HOST unset.');
+    process.exit(1);
+  }
+  server.listen(PORT, HOST, () => console.log(`Data Removal running at http://${HOST === '127.0.0.1' ? 'localhost' : HOST}:${PORT}`));
+}
+
+module.exports = { server, lookups, BROKERS };
