@@ -1,0 +1,13 @@
+{
+  "name": "my-teams-addon",
+  "version": "1.0.0",
+  "description": "Stremio addon: follow your teams with schedules and live scores",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

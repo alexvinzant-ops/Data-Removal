@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Data Removal</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --text: #1d2330; --muted: #5d6677; --line: #dfe3ea;
+    --accent: #2f5bd3; --accent-text: #fff; --red: #c0392b; --amber: #b7791f; --green: #2f855a; --gray: #718096;
+    --red-bg: #fdecea; --amber-bg: #fdf4e3; --green-bg: #e6f4ec; --gray-bg: #edf0f4; --blue-bg: #e8eefc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --card: #1b2029; --text: #e6e9ef; --muted: #9aa3b2; --line: #2c3340;
+      --accent: #6d8ff0; --accent-text: #0d1120; --red: #f08070; --amber: #e8b45a; --green: #6cc795; --gray: #9aa3b2;
+      --red-bg: #3a1f1c; --amber-bg: #3a2f1a; --green-bg: #1b3326; --gray-bg: #262c37; --blue-bg: #1f2a45;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { background: var(--card); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 0 16px; }
+  header .wrap { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
+  h1 { font-size: 18px; margin: 14px 0; }
+  nav { display: flex; gap: 4px; }
+  nav button { background: none; border: 0; padding: 16px 10px; color: var(--muted); font: inherit; cursor: pointer; border-bottom: 2px solid transparent; }
+  nav button.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+  main { padding: 24px 0 64px; }
+  h2 { font-size: 20px; margin: 0 0 12px; }
+  h3 { font-size: 16px; margin: 0; }
+  .muted { color: var(--muted); }
+  .small { font-size: 13px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 12px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  .stat b { display: block; font-size: 26px; }
+  .bar { height: 8px; background: var(--gray-bg); border-radius: 4px; overflow: hidden; margin: 6px 0 20px; }
+  .bar div { height: 100%; background: var(--green); }
+  button, .btn { font: inherit; font-size: 14px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--text); padding: 6px 12px; cursor: pointer; text-decoration: none; display: inline-block; }
+  button.primary, .btn.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  button:hover, .btn:hover { filter: brightness(0.96); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .between { justify-content: space-between; }
+  .pill { font-size: 12px; padding: 2px 8px; border-radius: 99px; white-space: nowrap; }
+  .s-unchecked { background: var(--gray-bg); color: var(--gray); }
+  .s-not_found { background: var(--green-bg); color: var(--green); }
+  .s-found { background: var(--red-bg); color: var(--red); }
+  .s-submitted { background: var(--amber-bg); color: var(--amber); }
+  .s-removed { background: var(--green-bg); color: var(--green); }
+  .due { background: var(--blue-bg); color: var(--accent); }
+  .site summary { cursor: pointer; list-style: none; }
+  .site summary::-webkit-details-marker { display: none; }
+  .site[open] summary { margin-bottom: 12px; }
+  .site .body { display: grid; gap: 12px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+  input, textarea, select { font: inherit; width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); color: var(--text); }
+  textarea { min-height: 70px; resize: vertical; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .grid4 { display: grid; grid-template-columns: 2fr 1.3fr 0.6fr 0.8fr auto; gap: 8px; align-items: end; }
+  @media (max-width: 640px) { .grid2, .grid4 { grid-template-columns: 1fr; } }
+  .filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+  .filters input { flex: 1 1 200px; width: auto; }
+  .filters select { width: auto; }
+  .todo { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
+  .todo:first-of-type { border-top: 0; }
+  ul.history { margin: 0; padding-left: 18px; }
+  dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--text); width: min(720px, 94vw); padding: 20px; }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  dialog textarea { min-height: 320px; font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
+  .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  .toast.show { opacity: 1; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header><div class="wrap">
+  <h1>🛡️ Data Removal</h1>
+  <nav>
+    <button data-tab="dashboard">Dashboard</button>
+    <button data-tab="sites">Sites</button>
+    <button data-tab="profile">My info</button>
+    <button data-tab="settings">Settings</button>
+  </nav>
+</div></header>
+<main class="wrap" id="main"></main>
+
+<dialog id="mail">
+  <h2>Removal request email</h2>
+  <p class="muted small">Review it, then open it in your email app or copy it. Send from the address you want replies at.</p>
+  <label for="m-to">To</label><input id="m-to">
+  <label for="m-subject" style="margin-top:8px">Subject</label><input id="m-subject">
+  <label for="m-body" style="margin-top:8px">Message</label><textarea id="m-body"></textarea>
+  <div class="row" style="margin-top:12px">
+    <button class="primary" id="m-open">Open in email app</button>
+    <button id="m-copy">Copy message</button>
+    <span style="flex:1"></span>
+    <button id="m-close">Close</button>
+  </div>
+</dialog>
+<div class="toast" id="toast"></div>
+
+<script>
+const STATUS = {
+  unchecked: 'Not checked',
+  not_found: 'Not listed',
+  found: 'Listed — remove',
+  submitted: 'Removal requested',
+  removed: 'Removed',
+};
+const DAY = 86400000;
+let data = null;
+let tab = location.hash.slice(1) || 'dashboard';
+const filters = { q: '', status: 'all' };
+const open = new Set(); // site cards the user has expanded
+
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const safeUrl = (u) => (/^https?:\/\//i.test(u || '') ? u : '');
+const link = (url, text, cls = 'btn') => safeUrl(url) ? `<a class="${cls}" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(text)}</a>` : '';
+const fmtDate = (iso) => new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+const lines = (s) => s.split('\n').map((x) => x.trim()).filter(Boolean);
+
+function toast(msg) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => t.classList.remove('show'), 1800);
+}
+
+async function api(method, path, body) {
+  const res = await fetch(`/api/${path}`, {
+    method,
+    headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'data-removal' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || res.statusText);
+  return json;
+}
+
+async function act(method, path, body, msg) {
+  try {
+    data = await api(method, path, body);
+    if (msg) toast(msg);
+    render();
+  } catch (err) {
+    toast(`Error: ${err.message}`);
+  }
+}
+
+// --- What needs doing ------------------------------------------------------
+
+function record(id) {
+  return data.records[id] || { status: 'unchecked', notes: '', listingUrls: [], history: [] };
+}
+
+function since(rec) {
+  const last = rec.history[rec.history.length - 1];
+  return last ? (Date.now() - new Date(last.at)) / DAY : Infinity;
+}
+
+// The next thing to do on a site, or null if nothing is due.
+function nextStep(site) {
+  const rec = record(site.id);
+  const age = since(rec);
+  const { recheckDays, followUpDays } = data.settings;
+  if (rec.status === 'found') return { rank: 0, text: 'Request removal' };
+  if (rec.status === 'submitted' && age >= followUpDays) return { rank: 1, text: `Follow up — requested ${Math.floor(age)} days ago` };
+  if ((rec.status === 'removed' || rec.status === 'not_found') && age >= recheckDays) return { rank: 2, text: 'Re-check — listings often come back' };
+  if (rec.status === 'unchecked') return { rank: 3, text: 'Check if you are listed' };
+  return null;
+}
+
+// --- Views -----------------------------------------------------------------
+
+function dashboard() {
+  const p = data.profile;
+  if (!p.first || !p.last) {
+    return `<div class="card"><h2>Welcome</h2>
+      <p>This app helps you find and remove your personal information from people-search sites and data brokers, the same job services like Optery do — but everything stays on your computer.</p>
+      <ol>
+        <li>Add your name, past cities, phones and emails under <b>My info</b>.</li>
+        <li>On <b>Sites</b>, use the search links to see if each site lists you.</li>
+        <li>Follow the opt-out steps and mark progress. The dashboard tells you when to follow up and re-check.</li>
+      </ol>
+      <button class="primary" onclick="go('profile')">Add my info</button></div>`;
+  }
+  const counts = Object.fromEntries(Object.keys(STATUS).map((s) => [s, 0]));
+  for (const b of data.brokers) counts[record(b.id).status]++;
+  const total = data.brokers.length;
+  const done = counts.removed + counts.not_found;
+  const todos = data.brokers.map((b) => ({ b, step: nextStep(b) })).filter((t) => t.step)
+    .sort((x, y) => x.step.rank - y.step.rank || x.b.priority - y.b.priority);
+  const engines = data.lookups.map((q) => {
+    const query = `"${q.first} ${q.last}"${q.city ? ` "${q.city}"` : ''}`;
+    return `<div class="row small"><span style="min-width:200px">${esc(q.label)}</span>
+      ${link(`https://www.google.com/search?q=${encodeURIComponent(query)}`, 'Google')}
+      ${link(`https://www.bing.com/search?q=${encodeURIComponent(query)}`, 'Bing')}
+      ${link(`https://duckduckgo.com/?q=${encodeURIComponent(query)}`, 'DuckDuckGo')}</div>`;
+  }).join('<div style="height:6px"></div>');
+
+  return `
+    <h2>Your progress</h2>
+    <div class="bar"><div style="width:${(done / total) * 100}%"></div></div>
+    <div class="stats">
+      <div class="stat"><b>${counts.found}</b><span class="muted">listed, not yet requested</span></div>
+      <div class="stat"><b>${counts.submitted}</b><span class="muted">removals requested</span></div>
+      <div class="stat"><b>${done}</b><span class="muted">clear (removed or not listed)</span></div>
+      <div class="stat"><b>${counts.unchecked}</b><span class="muted">not checked yet</span></div>
+    </div>
+    <div class="card"><h3 style="margin-bottom:8px">To do (${todos.length})</h3>
+      ${todos.length ? todos.slice(0, 15).map(({ b, step }) => `
+        <div class="todo"><div><b>${esc(b.name)}</b><div class="small muted">${esc(step.text)}</div></div>
+        <button onclick="openSite('${esc(b.id)}')">Open</button></div>`).join('')
+        : '<p class="muted">Nothing due. Nice work — check back later.</p>'}
+      ${todos.length > 15 ? `<p class="small muted">…and ${todos.length - 15} more on the Sites tab.</p>` : ''}
+    </div>
+    <div class="card"><h3>Search engines</h3>
+      <p class="small muted">See what else comes up for your name. Add any other site that lists you on the Sites tab with "Add a site".</p>
+      ${engines}
+    </div>`;
+}
+
+function siteCard(b) {
+  const rec = record(b.id);
+  const step = nextStep(b);
+  const searches = b.searchLinks.length
+    ? b.searchLinks.map((s) => link(s.url, `🔍 ${s.label}`)).join(' ')
+    : `<span class="small muted">Search for yourself on the site or on its opt-out page.</span> ${link(b.url, 'Open site')}`;
+  const history = rec.history.slice().reverse().map((h) => `<li class="small">${fmtDate(h.at)} — ${esc(STATUS[h.status] || h.status)}${h.note ? `: ${esc(h.note)}` : ''}</li>`).join('');
+  return `
+  <details class="card site" data-id="${esc(b.id)}" ${open.has(b.id) ? 'open' : ''}>
+    <summary class="row between">
+      <div><h3>${esc(b.name)}</h3>
+        <div class="small muted">${b.priority === 1 ? 'Major site' : b.priority === 2 ? 'Medium site' : 'Smaller site'} · ${b.method === 'email' ? 'Opt out by email' : b.method === 'account' ? 'Needs an account' : 'Web form'}${b.covers.length ? ` · also removes ${esc(b.covers.join(', '))}` : ''}</div>
+      </div>
+      <div class="row">${step && step.rank < 3 ? '<span class="pill due">Due</span>' : ''}<span class="pill s-${esc(rec.status)}">${esc(STATUS[rec.status])}</span></div>
+    </summary>
+    <div class="body">
+      <div><label>1. Look yourself up</label><div class="row">${searches}</div></div>
+      <div><label>2. Opt out</label>
+        <p style="margin:0 0 8px">${esc(b.steps)}</p>
+        <div class="row">${link(b.optOut, 'Open opt-out page', 'btn primary')}<button onclick="draftEmail('${esc(b.id)}')">✉️ Draft email</button></div>
+      </div>
+      <div><label>3. Record what happened</label>
+        <div class="row">
+          ${Object.entries(STATUS).filter(([k]) => k !== 'unchecked').map(([k, v]) => `<button class="${rec.status === k ? 'primary' : ''}" onclick="setStatus('${esc(b.id)}','${k}')">${esc(v)}</button>`).join('')}
+        </div>
+      </div>
+      <div class="grid2">
+        <div><label>Your listing URLs on this site (one per line)</label><textarea data-field="listingUrls">${esc(rec.listingUrls.join('\n'))}</textarea></div>
+        <div><label>Notes (confirmation numbers, which email you used…)</label><textarea data-field="notes">${esc(rec.notes)}</textarea></div>
+      </div>
+      <div class="row"><button onclick="saveNotes('${esc(b.id)}')">Save notes</button>
+        ${b.custom ? `<button onclick="removeCustom('${esc(b.id)}')">Delete this site</button>` : ''}</div>
+      ${history ? `<div><label>History</label><ul class="history">${history}</ul></div>` : ''}
+    </div>
+  </details>`;
+}
+
+function sites() {
+  const q = filters.q.toLowerCase();
+  const list = data.brokers.filter((b) => {
+    const rec = record(b.id);
+    if (q && !`${b.name} ${b.covers.join(' ')}`.toLowerCase().includes(q)) return false;
+    if (filters.status === 'due') return nextStep(b) && nextStep(b).rank < 3;
+    return filters.status === 'all' || rec.status === filters.status;
+  }).sort((x, y) => x.priority - y.priority);
+  return `
+    <div class="row between"><h2>Sites (${data.brokers.length})</h2><button onclick="toggleAdd()">+ Add a site</button></div>
+    <div class="card" id="add" hidden>
+      <h3 style="margin-bottom:8px">Add a site that lists you</h3>
+      <div class="grid2">
+        <div><label>Name</label><input id="c-name" placeholder="Example People Search"></div>
+        <div><label>Website</label><input id="c-url" placeholder="https://…"></div>
+        <div><label>Opt-out page (if any)</label><input id="c-opt" placeholder="https://…"></div>
+        <div><label>Privacy email (if any)</label><input id="c-email" placeholder="privacy@…"></div>
+      </div>
+      <div class="row" style="margin-top:10px"><button class="primary" onclick="addCustom()">Add</button></div>
+    </div>
+    <div class="filters">
+      <input id="f-q" placeholder="Filter by name" value="${esc(filters.q)}">
+      <select id="f-status">
+        <option value="all">All statuses</option>
+        <option value="due">Due now</option>
+        ${Object.entries(STATUS).map(([k, v]) => `<option value="${k}" ${filters.status === k ? 'selected' : ''}>${esc(v)}</option>`).join('')}
+      </select>
+    </div>
+    ${data.profile.first ? '' : '<div class="card">Add your name under <a href="#profile" onclick="go(\'profile\')">My info</a> to get search links for each site.</div>'}
+    ${list.map(siteCard).join('') || '<p class="muted">No sites match.</p>'}`;
+}
+
+const addressRow = (a = {}) => `
+  <div class="grid4 address">
+    <div><label>Street</label><input data-a="street" value="${esc(a.street)}"></div>
+    <div><label>City</label><input data-a="city" value="${esc(a.city)}"></div>
+    <div><label>State</label><input data-a="state" maxlength="2" placeholder="LA" value="${esc(a.state)}"></div>
+    <div><label>ZIP</label><input data-a="zip" value="${esc(a.zip)}"></div>
+    <button type="button" onclick="this.parentElement.remove()" title="Remove address">✕</button>
+  </div>`;
+
+function profile() {
+  const p = data.profile;
+  return `
+  <h2>My info</h2>
+  <p class="muted">Used to build search links and fill in removal requests. It's saved only on this computer, in <code>data/state.json</code>.
+  Tip: use a separate email address for opt-outs so brokers don't get your main one.</p>
+  <form class="card" id="profile-form">
+    <div class="grid2">
+      <div><label>First name</label><input name="first" value="${esc(p.first)}" required></div>
+      <div><label>Last name</label><input name="last" value="${esc(p.last)}" required></div>
+      <div><label>Middle name or initial</label><input name="middle" value="${esc(p.middle)}"></div>
+      <div><label>Birth year (helps you spot your record)</label><input name="birthYear" inputmode="numeric" value="${esc(p.birthYear)}"></div>
+      <div><label>Other names you've used — maiden, nicknames (one per line)</label><textarea name="aliases">${esc(p.aliases.join('\n'))}</textarea></div>
+      <div><label>Phone numbers, current and past (one per line)</label><textarea name="phones">${esc(p.phones.join('\n'))}</textarea></div>
+      <div><label>Email addresses, current and past (one per line)</label><textarea name="emails">${esc(p.emails.join('\n'))}</textarea></div>
+    </div>
+    <h3 style="margin:16px 0 4px">Addresses, current and past</h3>
+    <p class="small muted" style="margin-top:0">Brokers file you under every city you've lived in, so add old ones too.</p>
+    <div id="addresses" style="display:grid;gap:8px">${(p.addresses.length ? p.addresses : [{}]).map(addressRow).join('')}</div>
+    <div class="row" style="margin-top:10px">
+      <button type="button" id="add-address">+ Add address</button>
+      <span style="flex:1"></span><button class="primary">Save</button>
+    </div>
+  </form>`;
+}
+
+function settings() {
+  const s = data.settings;
+  return `
+  <h2>Settings</h2>
+  <form class="card" id="settings-form">
+    <div class="grid2">
+      <div><label>Remind me to re-check a site this many days after it's clear</label><input name="recheckDays" type="number" min="1" value="${s.recheckDays}"></div>
+      <div><label>Remind me to follow up this many days after requesting removal</label><input name="followUpDays" type="number" min="1" value="${s.followUpDays}"></div>
+    </div>
+    <div class="row" style="margin-top:10px"><span style="flex:1"></span><button class="primary">Save</button></div>
+  </form>
+  <div class="card"><h3>Backup</h3>
+    <p class="small muted">Download everything (your info, statuses, notes) as a file, or restore one. Keep backups somewhere private.</p>
+    <div class="row"><a class="btn" href="/api/export" download>Download backup</a>
+      <label class="btn" style="margin:0;color:var(--text);font-size:14px">Restore from file<input type="file" id="import" accept="application/json" hidden></label></div>
+  </div>
+  <div class="card"><h3>Good to know</h3>
+    <ul class="small">
+      <li>Removals usually take a few days to a few weeks. Sites often re-add people when they buy fresh data, which is why re-checking matters.</li>
+      <li>California residents can also use the state's free Delete Request and Opt-out Platform (DROP) to send one deletion request to every registered data broker.</li>
+      <li>Site links live in <code>brokers.js</code>. Sites change their pages; if a link breaks, update it there.</li>
+    </ul>
+  </div>`;
+}
+
+// --- Actions ---------------------------------------------------------------
+
+function go(name) {
+  tab = name;
+  location.hash = name;
+  render();
+  scrollTo(0, 0);
+}
+
+function openSite(id) {
+  open.add(id);
+  filters.q = '';
+  filters.status = 'all';
+  go('sites');
+  document.querySelector(`.site[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'start' });
+}
+
+function setStatus(id, status) {
+  const note = status === 'submitted' ? prompt('Optional note (e.g. confirmation number):', '') : '';
+  if (note === null) return;
+  act('POST', `brokers/${encodeURIComponent(id)}`, { status, note }, `Marked ${STATUS[status].toLowerCase()}`);
+}
+
+function saveNotes(id) {
+  const card = document.querySelector(`.site[data-id="${CSS.escape(id)}"]`);
+  act('POST', `brokers/${encodeURIComponent(id)}`, {
+    notes: card.querySelector('[data-field=notes]').value,
+    listingUrls: lines(card.querySelector('[data-field=listingUrls]').value),
+  }, 'Saved');
+}
+
+function toggleAdd() {
+  $('#add').hidden = !$('#add').hidden;
+}
+
+function addCustom() {
+  act('POST', 'custom', { name: $('#c-name').value, url: $('#c-url').value, optOut: $('#c-opt').value, email: $('#c-email').value }, 'Site added');
+}
+
+function removeCustom(id) {
+  if (confirm('Delete this site and its notes?')) act('DELETE', `custom/${encodeURIComponent(id)}`, undefined, 'Deleted');
+}
+
+function draftEmail(id) {
+  const b = data.brokers.find((x) => x.id === id);
+  const rec = record(id);
+  const p = data.profile;
+  const fullName = [p.first, p.middle, p.last].filter(Boolean).join(' ') || '[Your name]';
+  const section = (title, items) => (items.length ? `${title}:\n${items.map((i) => `  - ${i}`).join('\n')}\n` : '');
+  const addresses = p.addresses.map((a) => [a.street, a.city, [a.state, a.zip].filter(Boolean).join(' ')].filter(Boolean).join(', '));
+  const body = `To the privacy team at ${b.name},
+
+I am requesting that you:
+  1. Delete all personal information you hold about me,
+  2. Remove every listing or profile about me from your website(s), and
+  3. Stop selling or sharing my personal information, and do not collect it again.
+
+I make this request under every privacy law that applies, including the California Consumer Privacy Act (as amended by the CPRA), other U.S. state consumer privacy laws, and the GDPR / UK GDPR where relevant. If no law requires you to act, I ask that you honor this request voluntarily.
+
+To help you find my records:
+Name: ${fullName}
+${section('Also known as', p.aliases)}${p.birthYear ? `Birth year: ${p.birthYear}\n` : ''}${section('Addresses (current and past)', addresses)}${section('Phone numbers', p.phones)}${section('Email addresses', p.emails)}${section('Listings about me on your site', rec.listingUrls)}
+Please use this information only to process this request. Please confirm in writing when you have completed it, within the time the law allows (45 days under the CCPA). If you refuse any part of the request, please tell me which part and why.
+
+Thank you,
+${fullName}
+`;
+  $('#m-to').value = b.email || '';
+  $('#m-subject').value = 'Request to delete my personal information and opt out of sale';
+  $('#m-body').value = body;
+  $('#mail').showModal();
+}
+
+// --- Rendering and events --------------------------------------------------
+
+function render() {
+  for (const btn of document.querySelectorAll('nav button')) btn.classList.toggle('on', btn.dataset.tab === tab);
+  const views = { dashboard, sites, profile, settings };
+  $('#main').innerHTML = (views[tab] || dashboard)();
+}
+
+document.querySelector('nav').addEventListener('click', (e) => {
+  if (e.target.dataset.tab) go(e.target.dataset.tab);
+});
+window.addEventListener('hashchange', () => {
+  const name = location.hash.slice(1);
+  if (name && name !== tab) { tab = name; render(); }
+});
+
+// Remember which site cards are expanded, so re-rendering doesn't collapse them.
+document.addEventListener('toggle', (e) => {
+  const id = e.target.dataset?.id;
+  if (id) e.target.open ? open.add(id) : open.delete(id);
+}, true);
+
+document.addEventListener('input', (e) => {
+  if (e.target.id === 'f-q' || e.target.id === 'f-status') {
+    filters.q = $('#f-q').value;
+    filters.status = $('#f-status').value;
+    const pos = e.target.selectionStart;
+    render();
+    const el = $(`#${e.target.id}`);
+    el.focus();
+    if (pos != null && el.setSelectionRange) el.setSelectionRange(pos, pos);
+  }
+});
+
+document.addEventListener('click', (e) => {
+  if (e.target.id === 'add-address') $('#addresses').insertAdjacentHTML('beforeend', addressRow());
+});
+
+document.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  if (e.target.id === 'profile-form') {
+    const addresses = [...document.querySelectorAll('#addresses .address')].map((row) =>
+      Object.fromEntries([...row.querySelectorAll('[data-a]')].map((i) => [i.dataset.a, i.value])));
+    act('PUT', 'profile', {
+      first: f.get('first'), middle: f.get('middle'), last: f.get('last'), birthYear: f.get('birthYear'),
+      aliases: lines(f.get('aliases')), phones: lines(f.get('phones')), emails: lines(f.get('emails')), addresses,
+    }, 'Saved');
+  } else if (e.target.id === 'settings-form') {
+    act('PUT', 'settings', { recheckDays: Number(f.get('recheckDays')), followUpDays: Number(f.get('followUpDays')) }, 'Saved');
+  }
+});
+
+document.addEventListener('change', async (e) => {
+  if (e.target.id !== 'import' || !e.target.files[0]) return;
+  if (!confirm('Replace everything in the app with this backup?')) return;
+  try {
+    await act('POST', 'import', JSON.parse(await e.target.files[0].text()), 'Backup restored');
+  } catch {
+    toast('That file is not a valid backup');
+  }
+});
+
+$('#m-close').onclick = () => $('#mail').close();
+$('#m-copy').onclick = async () => {
+  await navigator.clipboard.writeText($('#m-body').value);
+  toast('Copied');
+};
+$('#m-open').onclick = () => {
+  const href = `mailto:${encodeURIComponent($('#m-to').value.trim())}?subject=${encodeURIComponent($('#m-subject').value)}&body=${encodeURIComponent($('#m-body').value)}`;
+  location.href = href;
+};
+
+api('GET', 'state').then((d) => { data = d; render(); }).catch((err) => {
+  $('#main').innerHTML = `<div class="card">Could not load: ${esc(err.message)}</div>`;
+});
+</script>
+</body>
+</html>
