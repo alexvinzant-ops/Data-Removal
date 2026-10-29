@@ -50,6 +50,11 @@
   .s-submitted { background: var(--amber-bg); color: var(--amber); }
   .s-removed { background: var(--green-bg); color: var(--green); }
   .due { background: var(--blue-bg); color: var(--accent); }
+  .scan-line { margin-top: 8px; padding: 8px 10px; border-radius: 7px; font-size: 14px; background: var(--gray-bg); }
+  .scan-line.s-listed { background: var(--red-bg); }
+  .scan-line.s-possible, .scan-line.s-blocked { background: var(--amber-bg); }
+  .scan-line.s-clear { background: var(--green-bg); }
+  button:disabled { opacity: .5; cursor: default; }
   .site summary { cursor: pointer; list-style: none; }
   .site summary::-webkit-details-marker { display: none; }
   .site[open] summary { margin-bottom: 12px; }
@@ -141,11 +146,36 @@ async function api(method, path, body) {
   return json;
 }
 
+// While a scan runs, refresh every couple of seconds to show progress and results.
+let polling = null;
+function watchScan() {
+  if (polling || !data.scan.running) return;
+  polling = setInterval(async () => {
+    try {
+      const busy = document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
+      const next = await api('GET', 'state');
+      const finished = !next.scan.running;
+      data = next;
+      if (!busy || finished) render();
+      if (finished) {
+        clearInterval(polling);
+        polling = null;
+        toast(data.scan.error ? 'Scan stopped with an error' : `Scan finished${data.scan.found ? ` — found you on ${data.scan.found} site${data.scan.found === 1 ? '' : 's'}` : ''}`);
+      }
+    } catch { /* try again next tick */ }
+  }, 2000);
+}
+
+function startScan(ids) {
+  act('POST', 'scan', ids ? { ids } : {}, 'Scan started');
+}
+
 async function act(method, path, body, msg) {
   try {
     data = await api(method, path, body);
     if (msg) toast(msg);
     render();
+    watchScan();
   } catch (err) {
     toast(`Error: ${err.message}`);
   }
@@ -162,6 +192,12 @@ function since(rec) {
   return last ? (Date.now() - new Date(last.at)) / DAY : Infinity;
 }
 
+// Days since the site was last checked, by you or by a scan that found nothing.
+function sinceChecked(rec) {
+  const scanned = rec.lastScan && rec.lastScan.result === 'clear' ? (Date.now() - new Date(rec.lastScan.at)) / DAY : Infinity;
+  return Math.min(since(rec), scanned);
+}
+
 // The next thing to do on a site, or null if nothing is due.
 function nextStep(site) {
   const rec = record(site.id);
@@ -169,12 +205,72 @@ function nextStep(site) {
   const { recheckDays, followUpDays } = data.settings;
   if (rec.status === 'found') return { rank: 0, text: 'Request removal' };
   if (rec.status === 'submitted' && age >= followUpDays) return { rank: 1, text: `Follow up — requested ${Math.floor(age)} days ago` };
-  if ((rec.status === 'removed' || rec.status === 'not_found') && age >= recheckDays) return { rank: 2, text: 'Re-check — listings often come back' };
-  if (rec.status === 'unchecked') return { rank: 3, text: 'Check if you are listed' };
+  const scan = rec.lastScan;
+  if (scan && scan.result === 'possible' && ['unchecked', 'not_found', 'removed'].includes(rec.status)) return { rank: 1, text: 'Scan found someone with your name — check if it is you' };
+  if ((rec.status === 'removed' || rec.status === 'not_found') && sinceChecked(rec) >= recheckDays) return { rank: 2, text: site.scannable ? 'Re-check — run a scan' : 'Re-check — listings often come back' };
+  if (rec.status === 'unchecked' && scan && (scan.result === 'blocked' || scan.result === 'error')) return { rank: 3, text: 'The scan couldn\'t get in — check by hand' };
+  if (rec.status === 'unchecked') return { rank: 3, text: site.scannable ? 'Run a scan, or check by hand' : 'Check by hand — this site can\'t be scanned' };
   return null;
 }
 
 // --- Views -----------------------------------------------------------------
+
+const SCAN_RESULT = {
+  listed: 'You are listed',
+  possible: 'Someone with your name is listed',
+  clear: 'No listing found',
+  blocked: 'The site blocked the scan',
+  error: 'The page did not load',
+};
+
+function scanCard() {
+  const s = data.scan;
+  const scannable = data.brokers.filter((b) => b.scannable).length;
+  if (s.running) {
+    const pct = s.total ? Math.round((s.done / s.total) * 100) : 0;
+    return `<div class="card"><div class="row between"><h3>Scanning… ${pct}%</h3><button onclick="act('POST','scan/cancel',{},'Stopping…')">Stop</button></div>
+      <div class="bar" style="margin:10px 0"><div style="width:${pct}%"></div></div>
+      <p class="small muted" style="margin:0">${s.current ? `Checking ${esc(s.current)}. ` : ''}${s.found ? `Found you on ${s.found} site${s.found === 1 ? '' : 's'} so far. ` : ''}
+      ${s.mode === 'browser' && data.settings.showBrowser ? 'A browser window opens for each site. If a site asks you to prove you are human, do it in that window and the scan continues.' : ''}</p></div>`;
+  }
+  const last = s.lastScanAt ? `Last full scan: ${fmtDate(s.lastScanAt)}.` : 'You haven\'t run a scan yet.';
+  const auto = data.settings.autoScanDays ? ` Scans again every ${data.settings.autoScanDays} days while the app is running.` : '';
+  return `<div class="card"><div class="row between"><div><h3>Automatic scan</h3>
+      <p class="small muted" style="margin:4px 0 0">Checks ${scannable} people-search sites and searches the web for your name, phone numbers and emails. Takes about 5–10 minutes. ${last}${auto}</p></div>
+      <button class="primary" onclick="startScan()">Scan now</button></div>
+    ${s.error ? `<p class="small" style="color:var(--red)">Last scan stopped with an error: ${esc(s.error)}</p>` : ''}
+    ${s.browserSupport ? '' : '<p class="small" style="color:var(--amber)">Basic mode: many sites block scans without a browser. Run <code>npm install</code> once in the app folder, then restart the app, so scans use Edge or Chrome.</p>'}
+  </div>`;
+}
+
+function webCard() {
+  if (!data.web.length) return '';
+  const byId = Object.fromEntries(data.brokers.map((b) => [b.id, b]));
+  return `<div class="card"><h3>Found on the web (${data.web.length})</h3>
+    <p class="small muted">Search results that mention your name. Add the ones about you as sites to remove; dismiss the rest.</p>
+    ${data.web.slice(0, 20).map((w) => `<div class="todo"><div style="min-width:0">
+      <b>${esc(w.title || w.domain)}</b><div class="small muted">${esc(w.domain)} · searched ${esc(w.query)}</div>
+      ${w.snippet ? `<div class="small">${esc(w.snippet)}</div>` : ''}</div>
+      <div class="row" style="flex-shrink:0">${link(w.url, 'Open')}
+      ${w.brokerId && byId[w.brokerId] ? `<button onclick="act('POST','web/${esc(w.id)}',{action:'dismiss'});openSite('${esc(w.brokerId)}')">Go to ${esc(byId[w.brokerId].name)}</button>`
+        : `<button class="primary" onclick="act('POST','web/${esc(w.id)}',{action:'add'},'Added to your sites')">It's me — add</button>`}
+      <button onclick="act('POST','web/${esc(w.id)}',{action:'dismiss'})">Not me</button></div></div>`).join('')}
+    ${data.web.length > 20 ? `<p class="small muted">…and ${data.web.length - 20} more.</p>` : ''}
+  </div>`;
+}
+
+function scanLine(b, rec) {
+  const scan = rec.lastScan;
+  if (!b.scannable) return '<p class="small muted" style="margin:6px 0 0">This site can\'t be scanned automatically; check it with the link above.</p>';
+  const button = `<button onclick="startScan(['${esc(b.id)}'])" ${data.scan.running ? 'disabled' : ''}>Scan this site</button>`;
+  if (!scan) return `<div class="row" style="margin-top:8px">${button}</div>`;
+  const links = scan.links.map((u) => link(u, 'Listing ' + hostPath(u))).join(' ');
+  return `<div class="scan-line s-${esc(scan.result)}"><b>Scan ${fmtDate(scan.at)}: ${esc(SCAN_RESULT[scan.result] || scan.result)}.</b> ${esc(scan.detail)}
+    ${scan.result === 'blocked' ? ' Check it by hand with the link above.' : ''}</div>
+    <div class="row" style="margin-top:8px">${links} ${button}</div>`;
+}
+
+const hostPath = (u) => { try { const x = new URL(u); return x.pathname.length > 1 ? x.pathname.slice(0, 40) : x.hostname; } catch { return ''; } };
 
 function dashboard() {
   const p = data.profile;
@@ -183,7 +279,7 @@ function dashboard() {
       <p>This app helps you find and remove your personal information from people-search sites and data brokers, the same job services like Optery do — but everything stays on your computer.</p>
       <ol>
         <li>Add your name, past cities, phones and emails under <b>My info</b>.</li>
-        <li>On <b>Sites</b>, use the search links to see if each site lists you.</li>
+        <li>Click <b>Scan now</b> on the dashboard. The app checks the people-search sites and searches the web for you.</li>
         <li>Follow the opt-out steps and mark progress. The dashboard tells you when to follow up and re-check.</li>
       </ol>
       <button class="primary" onclick="go('profile')">Add my info</button></div>`;
@@ -203,6 +299,8 @@ function dashboard() {
   }).join('<div style="height:6px"></div>');
 
   return `
+    ${scanCard()}
+    ${webCard()}
     <h2>Your progress</h2>
     <div class="bar"><div style="width:${(done / total) * 100}%"></div></div>
     <div class="stats">
@@ -240,7 +338,7 @@ function siteCard(b) {
       <div class="row">${step && step.rank < 3 ? '<span class="pill due">Due</span>' : ''}<span class="pill s-${esc(rec.status)}">${esc(STATUS[rec.status])}</span></div>
     </summary>
     <div class="body">
-      <div><label>1. Look yourself up</label><div class="row">${searches}</div></div>
+      <div><label>1. Look yourself up</label><div class="row">${searches}</div>${scanLine(b, rec)}</div>
       <div><label>2. Opt out</label>
         <p style="margin:0 0 8px">${esc(b.steps)}</p>
         <div class="row">${link(b.optOut, 'Open opt-out page', 'btn primary')}<button onclick="draftEmail('${esc(b.id)}')">✉️ Draft email</button></div>
@@ -307,13 +405,14 @@ function profile() {
   return `
   <h2>My info</h2>
   <p class="muted">Used to build search links and fill in removal requests. It's saved only on this computer, in <code>data/state.json</code>.
+  Scans can only be sure a listing is yours when it also shows your birth year (age), a phone number, a street address, an email, or another city you've lived in, so fill in as much as you can.
   Tip: use a separate email address for opt-outs so brokers don't get your main one.</p>
   <form class="card" id="profile-form">
     <div class="grid2">
       <div><label>First name</label><input name="first" value="${esc(p.first)}" required></div>
       <div><label>Last name</label><input name="last" value="${esc(p.last)}" required></div>
       <div><label>Middle name or initial</label><input name="middle" value="${esc(p.middle)}"></div>
-      <div><label>Birth year (helps you spot your record)</label><input name="birthYear" inputmode="numeric" value="${esc(p.birthYear)}"></div>
+      <div><label>Birth year (helps scans tell you apart from people with your name)</label><input name="birthYear" inputmode="numeric" value="${esc(p.birthYear)}"></div>
       <div><label>Other names you've used — maiden, nicknames (one per line)</label><textarea name="aliases">${esc(p.aliases.join('\n'))}</textarea></div>
       <div><label>Phone numbers, current and past (one per line)</label><textarea name="phones">${esc(p.phones.join('\n'))}</textarea></div>
       <div><label>Email addresses, current and past (one per line)</label><textarea name="emails">${esc(p.emails.join('\n'))}</textarea></div>
@@ -336,6 +435,10 @@ function settings() {
     <div class="grid2">
       <div><label>Remind me to re-check a site this many days after it's clear</label><input name="recheckDays" type="number" min="1" value="${s.recheckDays}"></div>
       <div><label>Remind me to follow up this many days after requesting removal</label><input name="followUpDays" type="number" min="1" value="${s.followUpDays}"></div>
+      <div><label>Scan automatically every this many days while the app is running (0 = never)</label><input name="autoScanDays" type="number" min="0" value="${s.autoScanDays}"></div>
+      <div><label>Browser during scans</label>
+        <label style="display:flex;gap:8px;align-items:center;color:var(--text);font-size:15px"><input type="checkbox" name="showBrowser" style="width:auto" ${s.showBrowser ? 'checked' : ''}> Show the browser window</label>
+        <span class="small muted">Recommended. Sites block hidden browsers more often, and a visible one lets you pass "are you human" checks.</span></div>
     </div>
     <div class="row" style="margin-top:10px"><span style="flex:1"></span><button class="primary">Save</button></div>
   </form>
@@ -348,6 +451,7 @@ function settings() {
     <ul class="small">
       <li>Removals usually take a few days to a few weeks. Sites often re-add people when they buy fresh data, which is why re-checking matters.</li>
       <li>California residents can also use the state's free Delete Request and Opt-out Platform (DROP) to send one deletion request to every registered data broker.</li>
+      <li>Scans visit sites the same way you would, from your computer. They can miss a listing (for example one filed under an old city) or block the visit, so a "No listing found" isn't a guarantee.</li>
       <li>Site links live in <code>brokers.js</code>. Sites change their pages; if a link breaks, update it there.</li>
     </ul>
   </div>`;
@@ -475,7 +579,10 @@ document.addEventListener('submit', (e) => {
       aliases: lines(f.get('aliases')), phones: lines(f.get('phones')), emails: lines(f.get('emails')), addresses,
     }, 'Saved');
   } else if (e.target.id === 'settings-form') {
-    act('PUT', 'settings', { recheckDays: Number(f.get('recheckDays')), followUpDays: Number(f.get('followUpDays')) }, 'Saved');
+    act('PUT', 'settings', {
+      recheckDays: Number(f.get('recheckDays')), followUpDays: Number(f.get('followUpDays')),
+      autoScanDays: Number(f.get('autoScanDays')), showBrowser: f.get('showBrowser') === 'on',
+    }, 'Saved');
   }
 });
 
@@ -499,7 +606,7 @@ $('#m-open').onclick = () => {
   location.href = href;
 };
 
-api('GET', 'state').then((d) => { data = d; render(); }).catch((err) => {
+api('GET', 'state').then((d) => { data = d; render(); watchScan(); }).catch((err) => {
   $('#main').innerHTML = `<div class="card">Could not load: ${esc(err.message)}</div>`;
 });
 </script>
